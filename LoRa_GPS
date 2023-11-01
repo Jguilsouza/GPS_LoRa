@@ -1,0 +1,253 @@
+#include <ESP32_LoRaWAN.h>
+#include <Arduino.h>
+#include <Wire.h>
+#include <WirePacker.h>
+#include <WireSlaveRequest.h>
+
+#define SDA_PIN 21
+#define SCL_PIN 22
+#define I2C_SLAVE_ADDR 0x08
+#define MAX_SLAVE_RESPONSE_LENGTH 32
+
+/*license for Heltec ESP32 LoRaWan, quary your ChipID relevant license: http://resource.heltec.cn/search */
+uint32_t  license[4] = {0x3660FBC0,0xF02859FB,0xA911F69F,0x9F742F40};
+/* OTAA para*/
+uint8_t DevEui[] = { 0x22, 0x32, 0x33, 0x00, 0x00, 0x88, 0x88, 0x06 }; //1=02
+uint8_t AppEui[] = { 0x70, 0xB3, 0xD5, 0x7E, 0xD0, 0x02, 0xB1, 0x8A }; //1=8A
+uint8_t AppKey[] = { 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x66, 0x01 }; //1=01
+
+/* ABP para*/
+uint8_t NwkSKey[] = { 0x15, 0xb1, 0xd0, 0xef, 0xa4, 0x63, 0xdf, 0xbe, 0x3d, 0x11, 0x18, 0x1e, 0x1e, 0xc7, 0xda,0x85 }; //1=85
+uint8_t AppSKey[] = { 0xd7, 0x2c, 0x78, 0x75, 0x8c, 0xdc, 0xca, 0xbf, 0x55, 0xee, 0x4a, 0x77, 0x8d, 0x16, 0xef,0x67 }; //1=67
+uint32_t DevAddr =  ( uint32_t )0x007e6ae1; //1=0x007e6ae1
+
+/*LoraWan channelsmask, default channels 0-7*/ 
+uint16_t userChannelsMask[6]={ 0x00FF,0x0000,0x0000,0x0000,0x0000,0x0000};
+
+/*LoraWan Class, Class A and Class C are supported*/
+DeviceClass_t  loraWanClass = CLASS_A;
+
+/*the application data transmission duty cycle.  value in [ms].*/
+uint32_t appTxDutyCycle = 3000;
+
+/*OTAA or ABP*/
+bool overTheAirActivation = true;
+
+/*ADR enable*/
+bool loraWanAdr = true;
+
+/* Indicates if the node is sending confirmed or unconfirmed messages */
+bool isTxConfirmed = true;
+
+/* Application port */
+uint8_t appPort = 2;
+
+String response="";
+
+/*!
+* Number of trials to transmit the frame, if the LoRaMAC layer did not
+* receive an acknowledgment. The MAC performs a datarate adaptation,
+* according to the LoRaWAN Specification V1.0.2, chapter 18.4, according
+* to the following table:
+*
+* Transmission nb | Data Rate
+* ----------------|-----------
+* 1 (first)       | DR
+* 2               | DR
+* 3               | max(DR-1,0)
+* 4               | max(DR-1,0)
+* 5               | max(DR-2,0)
+* 6               | max(DR-2,0)
+* 7               | max(DR-3,0)
+* 8               | max(DR-3,0)
+*
+* Note, that if NbTrials is set to 1 or 2, the MAC will not decrease
+* the datarate, in case the LoRaMAC layer did not receive an acknowledgment
+*/
+uint8_t confirmedNbTrials = 1;
+
+/*LoraWan debug level, select in arduino IDE tools.
+* None : print basic info.
+* Freq : print Tx and Rx freq, DR info.
+* Freq && DIO : print Tx and Rx freq, DR, DIO0 interrupt and DIO1 interrupt info.
+* Freq && DIO && PW: print Tx and Rx freq, DR, DIO0 interrupt, DIO1 interrupt, MCU sleep and MCU wake info.
+*/
+uint8_t debugLevel = LoRaWAN_DEBUG_LEVEL;
+
+/*LoraWan region, select in arduino IDE tools*/
+LoRaMacRegion_t loraWanRegion = ACTIVE_REGION;
+
+void setup() {
+  
+  if(mcuStarted==0)
+  {
+    LoRaWAN.displayMcuInit();
+  }
+  
+  Serial.begin(115200);
+  
+  while (!Serial);
+  SPI.begin(SCK,MISO,MOSI,SS);
+  Mcu.init(SS,RST_LoRa,DIO0,DIO1,license);
+  deviceState = DEVICE_STATE_INIT;
+  
+  Wire1.begin(SDA_PIN, SCL_PIN);        // join i2c bus (address optional for master)
+}
+
+// The loop function is called in an endless loop
+void loop()
+{
+switch( deviceState )
+  {
+    case DEVICE_STATE_INIT:
+    {
+#if(LORAWAN_DEVEUI_AUTO)
+      LoRaWAN.generateDeveuiByChipID();
+#endif
+      LoRaWAN.init(loraWanClass,loraWanRegion);
+      break;
+    }
+    case DEVICE_STATE_JOIN:
+    {
+      LoRaWAN.displayJoining();
+      LoRaWAN.join();
+      break;
+    }
+    case DEVICE_STATE_SEND:
+    {
+      LoRaWAN.displaySending();
+      prepareTxFrame( appPort );
+      LoRaWAN.send(loraWanClass);
+      deviceState = DEVICE_STATE_CYCLE;
+      break;
+    }
+    case DEVICE_STATE_CYCLE:
+    {
+      // Schedule next packet transmission
+      txDutyCycleTime = appTxDutyCycle + randr( -APP_TX_DUTYCYCLE_RND, APP_TX_DUTYCYCLE_RND );
+      LoRaWAN.cycle(txDutyCycleTime);
+      deviceState = DEVICE_STATE_SLEEP;
+      break;
+    }
+    case DEVICE_STATE_SLEEP:
+    {
+      LoRaWAN.displayAck();
+      LoRaWAN.sleep(loraWanClass,debugLevel);
+      break;
+    }
+    default:
+    {
+      deviceState = DEVICE_STATE_INIT;
+      break;
+    }
+  }
+}
+
+static void prepareTxFrame(uint8_t port){
+  
+    uint32_t SensL1T1 = 0;
+    appDataSize = 9;
+    int i, j;
+    
+    for (i = 1; i <= 9; i++) {  
+
+       WirePacker packer;
+       //
+       for (j = 1; j <= 3; j++) {
+       Serial.print("    j:"); //IMPRIME O TEXTO NO MONITOR SERIAL
+       Serial.println(j);   
+       
+       packer.write(i);
+       packer.end();
+      
+       Wire1.beginTransmission(I2C_SLAVE_ADDR);
+       while (packer.available()) {               
+       Wire1.write(packer.read());
+       }
+       
+       Wire1.endTransmission();                    
+
+       delay(15);
+       
+       WireSlaveRequest slaveReq(Wire1, I2C_SLAVE_ADDR, MAX_SLAVE_RESPONSE_LENGTH);
+       slaveReq.setRetryDelay(10);
+       bool success = slaveReq.request();
+
+       if (success) {
+       while (slaveReq.available()) {            // slave may send less than requested
+       char c = slaveReq.read();                 // receive a byte as character
+       response += c;
+          } 
+       }
+       SensL1T1 = response.toInt();
+       
+       if(SensL1T1 != 0) {
+       
+       if(SensL1T1 > 10000){
+       SensL1T1 = 0; 
+            }
+       break;
+         }
+       
+       }  
+       
+       Serial.print("    S"); //IMPRIME O TEXTO NO MONITOR SERIAL
+       Serial.print(i);
+       Serial.print(":");
+       Serial.println(float(SensL1T1));         // print the character
+       response=""; 
+       
+      //ENVIO DE DADOS PARA O GATEWAY
+        
+        switch (i) {
+          case 1:{
+            appData[0] = lowByte(SensL1T1);
+            
+            break;
+            }
+          case 2:{
+            appData[1] = lowByte(SensL1T1);
+           
+            break;
+            }
+          case 3:{
+            appData[2] = lowByte(SensL1T1);
+           
+            break;
+            }
+            case 4:{
+            appData[3] = lowByte(SensL1T1);
+            
+            break;
+            }
+            case 5:{
+            
+            appData[4] = lowByte(SensL1T1);
+            break;
+            }
+            case 6:{
+            
+            appData[5] = lowByte(SensL1T1);
+            break;
+            }
+            case 7:{
+          
+            appData[6] = lowByte(SensL1T1);
+            break;
+            }
+            case 8:{
+           
+            appData[7] = lowByte(SensL1T1);
+            break;
+            }
+            case 9:{
+           
+            appData[8] = lowByte(SensL1T1);
+            break;
+            }
+          default:
+           break;
+        }
+
+    }
+}
