@@ -1,0 +1,198 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <WireSlave.h>
+
+// ========================= GPS ==============================
+#include <SD.h>
+#include <SPI.h>
+#include <TinyGPSPlus.h> 
+
+#define RXD2 16
+#define TXD2 17
+HardwareSerial neogps(2);
+TinyGPSPlus gps;
+float lat, lon, vel;
+
+
+// ============ Definição dos Pinos da rede i2C ============
+
+#define SDA_PIN 21                    //Definição do pino SDA da rede I2C
+#define SCL_PIN 22                    //Definição do pino SDL da rede I2C
+#define I2C_SLAVE_ADDR 0x08           //Definição do endereço do escravo I2C
+
+           
+
+// ======= Definição das variáveis do programa ===============
+
+
+String STS1, STS2, STS3, STS4, STS6, STS7, STS8, STS9;                                                //String das temperaturas*100
+char ChTS1[5],ChTS2[5],ChTS3[5],ChTS4[5];        //Armazena os caracteres da String das temperaturas
+int TS1i=0, TS2i=0, TS3i=0, TS4i=0;                            //Armazena as temperaturas multiplicadas por 100
+char S1str[15], S2str[15], S3str[15], S4str[15], S6str[15], S7str[15], S8str[15], S9str[15];       
+int RxData = 0;                                                                                       //Armazena o valor lido no i2C
+
+uint8_t ts1, ts2, ts3, ts4, ts6, ts7, ts8, ts9;
+
+//void receiveEvent(int bytes);
+//void requestEvent();
+
+TaskHandle_t Task1;
+
+void setup(){
+  
+ Serial.begin(115200);                   //ativa a comunicacao serial
+
+  //Inicialização da comunicação com o módulo GPS
+  neogps.begin(9600, SERIAL_8N1, RXD2, TXD2);
+
+  
+bool success = WireSlave.begin(SDA_PIN, SCL_PIN, I2C_SLAVE_ADDR);
+    if (!success) {
+        Serial.println("I2C slave init failed");
+        while(1) delay(100);
+    }
+
+ //create a task that will be executed in the Task1code() function, with priority 1 and executed on core 0
+ xTaskCreatePinnedToCore(
+                    Task1code,   //Task function. 
+                    "Task1",     // name of task. 
+                    10000,       // Stack size of task 
+                    NULL,        // parameter of the task 
+                    1,           // priority of the task 
+                    &Task1,      // Task handle to keep track of created task 
+                    1);          // pin task to core 0                
+ delay(100); 
+
+WireSlave.onReceive(receiveEvent);
+WireSlave.onRequest(requestEvent);
+
+}
+
+void Task1code( void * pvParameters ){
+Serial.print("Task1 running on core ");
+Serial.println(xPortGetCoreID());
+
+  for(;;){
+
+  boolean newData = false;
+  for (unsigned long start = millis(); millis() - start < 1000;)
+  {
+    while (neogps.available())
+    {
+      if (gps.encode(neogps.read()))
+      {
+        newData = true;
+      }
+    }
+  }
+
+  //If newData is true
+ /* if(newData == true)
+  {
+    newData = false;
+    Serial.println(gps.satellites.value());
+    //latitude e longitude
+    //lat = gps.location.lat();
+    //lon = gps.location.lng();
+    lat = -20.198193;
+    lon = -40.217179;
+    Serial.print("Dados");
+    Serial.print(gps.location.lat());
+    Serial.println(lon);
+    delay(6000);
+  }
+  else
+  {
+    Serial.println("Sem dados");
+  }*/
+  lat = -20.198193;
+  lon = -40.217179;
+  
+  uint32_t lat_bin;
+  memcpy(&lat_bin, &lat, 4);
+  ts1 = (lat_bin >> 0) & 0xFF; 
+  ts2 = (lat_bin >> 8) & 0xFF; 
+  ts3 = (lat_bin >> 16) & 0xFF; 
+  ts4 = (lat_bin >> 24) & 0xFF; 
+         
+  Serial.println(ts1, HEX);                             
+  Serial.println(ts2, HEX);
+  Serial.println(ts3, HEX);
+  Serial.println(ts4, HEX);                  
+  Serial.println(" lat");
+
+   uint32_t lon_bin;
+  memcpy(&lon_bin, &lon, 4);
+  ts6 = (lon_bin >> 0) & 0xFF; 
+  ts7 = (lon_bin >> 8) & 0xFF; 
+  ts8 = (lon_bin >> 16) & 0xFF; 
+  ts9 = (lon_bin >> 24) & 0xFF; 
+         
+  Serial.println(ts6, HEX);                             
+  Serial.println(ts7, HEX);
+  Serial.println(ts8, HEX);
+  Serial.println(ts9, HEX);                  
+  Serial.println(" lon");
+  
+  sprintf(S1str, "%4dn", ts1);
+  sprintf(S2str, "%4dn", ts2);
+  sprintf(S3str, "%4dn", ts3);
+  sprintf(S4str, "%4dn", ts4);
+
+  sprintf(S6str, "%4dn", ts6);
+  sprintf(S7str, "%4dn", ts7);
+  sprintf(S8str, "%4dn", ts8);
+  sprintf(S9str, "%4dn", ts9);
+  
+  delay(200);
+   
+      }
+  }
+ 
+void loop(){             
+  
+  WireSlave.update();
+  delay(5);
+}
+
+void receiveEvent(int bytes) {
+  
+  int x = WireSlave.read();         
+  RxData = x;
+  
+}
+
+void requestEvent() {                     
+switch(RxData){
+  case 1:
+    WireSlave.write(S1str);
+    break;
+  case 2:
+    WireSlave.write(S2str);
+    break;
+  case 3: 
+    WireSlave.write(S3str);
+    break;
+  case 4:   
+    WireSlave.write(S4str);
+    break;
+   case 5:   
+    WireSlave.write("00");
+    break;
+  case 6:
+    WireSlave.write(S6str);
+    break;
+  case 7:
+    WireSlave.write(S7str);
+    break;
+  case 8: 
+    WireSlave.write(S8str);
+    break;
+  case 9:   
+    WireSlave.write(S9str);
+    break;
+   default:
+    WireSlave.write("00000");
+   break;
+  }
+}
